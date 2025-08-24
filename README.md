@@ -5,16 +5,3 @@
 ---
 
 ## 目录
-### database 
-    数据库文件 pymysql 
-    数据库相关的工具函数
-### scrapy_note
-    scrapy的笔记
-### src
-    爬虫可能所需的一些静态资源
-### Utils
-    工具类【例如字体转换等】
-
-## 爬虫
-### sina
-    新浪网
