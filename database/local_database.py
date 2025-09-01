@@ -5,6 +5,6 @@ MYSQL_CONNECT = pymysql.connect(
     port=3306,
     user='root',
     password='chenlin',
-    database='fastnews',
+    database='',
     charset='utf8'
 )
