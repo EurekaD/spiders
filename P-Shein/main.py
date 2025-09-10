@@ -242,7 +242,7 @@ def parse_page(page: ChromiumPage):
 
 if __name__ == "__main__":
 
-    print("这是一个可视化的网页数据抓取工具，专门用于抓取 Ozon.ru 上的产品信息，自定义数量，可选择下载、插入图片到表格中")
+    print("这是一个可视化的网页数据抓取工具，专门用于抓取 Shein 上的产品信息，自定义数量，可选择下载、插入图片到表格中")
     print("""
     将会抓取以下字段：
         index           商品排序
@@ -267,21 +267,21 @@ if __name__ == "__main__":
             "max_products"]
     )
 
-    # config["download_image"] = questionary.select(
-    #     "是否下载图片？",
-    #     choices=[
-    #         questionary.Choice("Yes", value=True),
-    #         questionary.Choice("No", value=False)
-    #     ]
-    # ).ask()
-    # if config["download_image"]:
-    #     config["insert_image"] = questionary.select(
-    #         "是否将图片插入表格？（不插入表格将会用图片下载的本地路径表示）",
-    #         choices=[
-    #             questionary.Choice("Yes", value=True),
-    #             questionary.Choice("No", value=False)
-    #         ]
-    #     ).ask()
+    config["download_image"] = questionary.select(
+        "是否下载图片？",
+        choices=[
+            questionary.Choice("Yes", value=True),
+            questionary.Choice("No", value=False)
+        ]
+    ).ask()
+    if config["download_image"]:
+        config["insert_image"] = questionary.select(
+            "是否将图片插入表格？（不插入表格将会用图片下载的本地路径表示）",
+            choices=[
+                questionary.Choice("Yes", value=True),
+                questionary.Choice("No", value=False)
+            ]
+        ).ask()
 
     input("请在网页中进行搜索/筛选/登录操作后，按回车开始抓取数据...")
 
