@@ -46,7 +46,9 @@ RUB_TO_CNY = 0.085  # 1 卢布 ≈ 0.075 人民币
 
 extract_num = lambda s: re.search(r"\d+", s).group() if re.search(r"\d+", s) else None
 
-extract_rating = lambda s: float(re.match(r"([\d.,]+)", s.strip()).group(1).replace(",", "."))
+extract_rating = lambda s: (
+    float(m.group(1).replace(",", ".")) if (m := re.search(r"([\d.,]+)", s or "")) else None
+)
 
 
 def now_str():
@@ -361,7 +363,8 @@ def parse_product_page(page: ChromiumPage, url: str, filename: str):
         div_webSingleProductScore = tab.ele('@data-widget=webSingleProductScore', timeout=5)
         if div_webSingleProductScore:
             score_str = div_webSingleProductScore.text
-            product_rating = extract_rating(score_str)
+            if score_str:
+                product_rating = extract_rating(score_str)
 
         product_link = url
 
@@ -399,7 +402,7 @@ def parse_product_page(page: ChromiumPage, url: str, filename: str):
             "first_crawled_at": now_str(),
             "last_updated_at": now_str(),
         }
-
+        tab.close()
         return product_data
 
     except Exception as e:
