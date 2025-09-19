@@ -14,7 +14,6 @@
     - DrissionPage 4.1.1.2
     - pandas 2.3.0
     - openpyxl 3.1.5
-    - Pillow 11.3.0
 """
 
 import os
@@ -27,6 +26,7 @@ from DrissionPage import ChromiumPage
 from concurrent.futures import ThreadPoolExecutor, as_completed
 import traceback
 from dateutil.relativedelta import relativedelta
+import glob
 
 # 全局配置
 config = {
@@ -41,6 +41,26 @@ config = {
     "insert_image": False,  # 是否将图片插入表格
 }
 
+COLUMN_MAP = {
+    "product_id": "商品Id",
+    "primary_category": "一级类目",
+    "secondary_category": "二级类目",
+    "tertiary_category": "三级类目",
+    "green_price_rub": "绿标价（卢布）",
+    "green_price_cny": "绿标价（￥）",
+    "black_price_rub": "黑标价（卢布）",   # 你表头里没写，我补充上
+    "black_price_cny": "黑标价（￥）",
+    "lowest_follow_price_cny": "跟卖最低价（￥）",
+    "sales_volume": "销量",
+    "follow_seller_count": "跟卖数量",
+    "product_rating": "商品评分",
+    "product_link": "商品链接",
+    "country_of_origin": "商品生产国家",
+    "product_info": "商品信息",
+    "seller_id": "卖家Id",
+    "first_crawled_at": "商品数据首次获取时间",
+    "last_updated_at": "商品数据更新时间"
+}
 
 RUB_TO_CNY = 0.085  # 1 卢布 ≈ 0.075 人民币
 
@@ -84,6 +104,34 @@ def extract_seller_from_href(href_str: str) -> str | None:
         return None
 
 
+def merge_excel_files(folder, mutil_file="worker_*.xlsx", output_file=config["out_filename"]):
+    files = glob.glob(os.path.join(folder, mutil_file))
+
+    all_dfs = []
+    for f in files:
+        try:
+            df = pd.read_excel(f)
+            all_dfs.append(df)
+            print(f"读取 {f} 行数={len(df)}")
+        except Exception as e:
+            print(f"读取 {f} 出错: {e}")
+
+    if not all_dfs:
+        print("没有找到要合并的文件")
+        return
+
+    # 合并
+    merged = pd.concat(all_dfs, ignore_index=True)
+
+    # 根据 seller_id + product_id 去重（假如这两个能唯一标识一行）
+    if "seller_id" in merged.columns and "product_id" in merged.columns:
+        merged = merged.drop_duplicates(subset=["seller_id", "product_id"], keep="first")
+
+    # 保存
+    merged.to_excel(output_file, index=False)
+    print(f"合并完成，结果保存到 {output_file}, 共 {len(merged)} 行")
+
+
 def append_to_excel(data: dict | list[dict], filename: str = None):
     """
     将字典或字典列表追加到 Excel 文件中。
@@ -108,55 +156,84 @@ def append_to_excel(data: dict | list[dict], filename: str = None):
 
 
 def parse_sellers_page(page: ChromiumPage):
-    sellers = []
+    key_file = "关键词.xlsx"
 
-    div_webBestSeller = page.ele('@data-widget=webBestSeller', timeout=5)
-    if div_webBestSeller:
-        button_webBestSeller = div_webBestSeller.ele('tag:button')
+    def crawl_sellers(current_page: ChromiumPage):
+        """内部函数：执行跟卖商家抓取"""
+        sellers = []
+        div_webBestSeller = current_page.ele('@data-widget=webBestSeller', timeout=5)
+        if div_webBestSeller:
+            button_webBestSeller = div_webBestSeller.ele('tag:button')
+            if button_webBestSeller:
+                button_webBestSeller.click()
+                print("点击跟卖 查看更多")
+                time.sleep(5)
 
-        if button_webBestSeller:
-            button_webBestSeller.click()
-            print("点击跟卖 查看更多")
+                div_sellerList = current_page.ele('#seller-list', timeout=5)
+                if div_sellerList:
+                    button_more_sellerList = div_sellerList.ele("xpath:./button", timeout=5)
+                    if button_more_sellerList:
+                        button_more_sellerList.click()
+                        print("点击更多 显示全部")
 
-            time.sleep(5)
-
-            div_sellerList = page.ele('#seller-list', timeout=5)
-
-            if div_sellerList:
-                button_more_sellerList = div_sellerList.ele("xpath:./button", timeout=5)
-
-                if button_more_sellerList:
-                    button_more_sellerList.click()
-                    print("点击更多 显示全部")
-
-                    # 暂存所有的商家链接
-                    div_sellers = div_sellerList.eles("xpath:./div/div", timeout=5)
-
-                    for div_seller in div_sellers:
-                        a_seller = div_seller.ele("xpath:./div/div[2]//a")
-                        if a_seller:
-                            seller_url = a_seller.attr("href")
-                            seller_name = a_seller.text
-
-                            print(f"{seller_name} : {seller_url}")
-                            sellers.append(
-                                {
+                        # 暂存所有的商家链接
+                        div_sellers = div_sellerList.eles("xpath:./div/div", timeout=5)
+                        for div_seller in div_sellers:
+                            a_seller = div_seller.ele("xpath:./div/div[2]//a")
+                            if a_seller:
+                                seller_url = a_seller.attr("href")
+                                seller_name = a_seller.text
+                                print(f"{seller_name} : {seller_url}")
+                                sellers.append({
+                                    "seller_id": extract_seller_from_href(seller_url),
                                     "seller_name": seller_name,
                                     "url": seller_url,
                                     "is_processed": 0
-                                }
-                            )
+                                })
+        return sellers
 
-    print(f"找到 {len(sellers)} 家跟卖， 依次抓取这些商家的所有商品")
-    append_to_excel(sellers, filename="sellers.xlsx")
-    return sellers
+    # 如果不存在关键词文件，就抓取当前页面的跟卖商家
+    if not os.path.exists(key_file):
+        sellers = crawl_sellers(page)
+        print(f"找到 {len(sellers)} 家跟卖，依次抓取这些商家的所有商品")
+        append_to_excel(sellers, filename="sellers.xlsx")
+
+    # 如果存在关键词文件，就读取关键词逐个搜索并抓取
+    else:
+        print("使用关键词文件！")
+        df = pd.read_excel(key_file)
+        if "关键词" not in df.columns:
+            raise ValueError("关键词文件中必须包含 '关键词' 列")
+
+        all_sellers = []
+        for keyword in df["关键词"]:
+            print(f"搜索关键词: {keyword}")
+            # 这里你要实现搜索逻辑，例如跳转搜索页面
+            search_url = f"https://www.ozon.ru/search/?from_global=true&text={keyword}"
+            page.get(search_url)
+            time.sleep(3)
+
+            sellers = crawl_sellers(page)
+            print(f"关键词 {keyword} 找到 {len(sellers)} 家跟卖")
+            all_sellers.extend(sellers)
+
+        append_to_excel(all_sellers, filename="sellers.xlsx")
+
+    # 最后统一去重并保存
+    if os.path.exists("sellers.xlsx"):
+        df = pd.read_excel("sellers.xlsx")
+        df = df.drop_duplicates(subset=["seller_id"], keep="first")
+        df.to_excel("sellers.xlsx", index=False)
+        print(f"去重后共 {len(df)} 家商家，已保存到 sellers.xlsx")
 
 
 def parse_seller_page(page: ChromiumPage):
     """健壮版解析函数，支持局部刷新重试"""
     index = 1
+    no_progress = 0
+    max_no_progress = 3  # 容忍3次无进展
 
-    while index <= config["max_products"]:
+    while index <= config["max_products"] and no_progress < max_no_progress:
         try:
             # 每次循环都重新找 paginator，避免缓存元素失效
             paginator = page.ele("#paginator", timeout=5)
@@ -168,6 +245,7 @@ def parse_seller_page(page: ChromiumPage):
             # 找商品网格
             product_grids = paginator.eles('@data-widget=tileGridDesktop', timeout=5)
 
+            processed_in_this_round = 0
             for grid in product_grids:
                 # 判断是否已处理过
                 if grid.attr("data-grabbed") == "1":
@@ -210,6 +288,7 @@ def parse_seller_page(page: ChromiumPage):
                         # 加标记，避免重复处理
                         product_card.run_js("this.style.backgroundColor = 'lightblue';")
                         index += 1
+                        processed_in_this_round += 1
                         if index > config["max_products"]:
                             return
 
@@ -223,6 +302,11 @@ def parse_seller_page(page: ChromiumPage):
             # 下滑加载更多
             page.run_js("window.scrollBy(0, document.body.scrollHeight);")
             page.wait(config["scroll_pause"])
+
+            if processed_in_this_round == 0:
+                no_progress += 1
+            else:
+                no_progress = 0
 
         except Exception as e:
             # 捕获 ElementLostError 等异常，等待后重试
@@ -275,8 +359,10 @@ def get_recent_reviews(tab, timestamp_sec, scroll_pause=1):
     return reviews_timestamp, sales_volume
 
 
-def parse_product_page(page: ChromiumPage, url: str, filename: str):
+def parse_product_page(page: ChromiumPage, url: str, seller_id: str):
     """解析具体的产品详情页"""
+    print(f"正在处理该产品链接，请勿操作页面！ {url}")
+
     try:
         tab = page.new_tab(url=url)
 
@@ -358,7 +444,6 @@ def parse_product_page(page: ChromiumPage, url: str, filename: str):
         timestamp_sec = int(one_month_ago.timestamp())
 
         reviews_timestamp, sales_volume = get_recent_reviews(tab, timestamp_sec)
-        print(reviews_timestamp)
 
         div_webSingleProductScore = tab.ele('@data-widget=webSingleProductScore', timeout=5)
         if div_webSingleProductScore:
@@ -399,6 +484,7 @@ def parse_product_page(page: ChromiumPage, url: str, filename: str):
             "product_link": product_link,
             "country_of_origin": country_of_origin,
             "product_info": product_info,
+            "seller_id": seller_id,
             "first_crawled_at": now_str(),
             "last_updated_at": now_str(),
         }
@@ -415,9 +501,9 @@ def worker(worker_index: int):
     output_filename_worker = f"worker_{worker_index}.xlsx"
     while not task_queue.empty():
         try:
-            index, url = task_queue.get_nowait()
+            index, url, seller_id = task_queue.get_nowait()
 
-            product_data = parse_product_page(page, url=url, filename=output_filename_worker)
+            product_data = parse_product_page(page, url=url, seller_id=seller_id)
 
             append_to_excel(product_data, output_filename_worker)
 
@@ -457,6 +543,12 @@ if __name__ == "__main__":
     main_page.get(config["url"])
     print("网页打开成功")
 
+    config["max_products"] = int(
+        input(f"输入每个商家抓取的产品数量，（默认 {config['max_products']} 个）：") or config["max_products"]
+    )
+
+    config["max_workers"] = int(input("输入最大线程数（推荐2-5）：") or 2)
+
     if os.path.exists(config["out_filename"]):
         now = datetime.now()
         config["out_filename"] = now.strftime("结果_%Y%m%d_%H%M%S.xlsx")
@@ -470,39 +562,48 @@ if __name__ == "__main__":
 
     main_page = all_tabs[0]
 
-    print(f"Page Title: {main_page.title}")
-    print("正在抓取数据，请勿操作页面！")
-
     sellers_file = f"sellers.xlsx"
-    if not os.path.exists(sellers_file):
-        parse_sellers_page(main_page)
+    # if not os.path.exists(sellers_file):
+    parse_sellers_page(main_page)
 
     df_sellers = pd.read_excel(sellers_file)
-    sellers = df_sellers["url"]
 
     seller_product_file = f"sellers_products.xlsx"
     if not os.path.exists(seller_product_file):
-        for seller in sellers:
+        for index, seller in df_sellers.iterrows():
+
+            is_processed = pd.to_numeric(seller["is_processed"], errors="coerce")
+            if is_processed != 0:
+                print(f"商家 {seller['seller_name']} 已处理， 跳过")
+                continue
+
             print(f"正在寻找商家 {seller['seller_name']} 的产品集合...")
 
             main_page.get(seller["url"])
 
             batch = []
             for product in parse_seller_page(main_page):
-                product["seller_id"] = extract_seller_from_href(seller["url"])
-                batch.append(product)
-                if len(batch) >= config["batch_size"]:
-                    append_to_excel(batch, filename=seller_product_file)
-                    batch.clear()
+                if product["sku"] != "":
+                    product["seller_id"] = seller['seller_id']
+                    batch.append(product)
+                    if len(batch) >= config["batch_size"]:
+                        append_to_excel(batch, filename=seller_product_file)
+                        batch.clear()
             if batch:
                 append_to_excel(batch, filename=seller_product_file)
+
+            df_sellers.at[index, "is_processed"] = 1
+
+        df_sellers.to_excel(sellers_file, index=False)
+    else:
+        print(f"使用已存在的商品文件，如果需要重新寻找商家的商品集合，请删除 {seller_product_file} 文件重试")
 
     print("开始抓取具体的商品详情")
     # 抓取具体商品
     product_links = []
     if os.path.exists(seller_product_file):
         df_products = pd.read_excel(seller_product_file)
-        product_links = df_products["product_url"].tolist()
+        product_links = list(zip(df_products["product_url"], df_products["seller_id"]))
     else:
         print("Error")
 
@@ -510,17 +611,22 @@ if __name__ == "__main__":
 
     tasks = list(enumerate(product_links))
     task_queue = Queue()
-    for index, url in tasks:
-        task_queue.put((index, url))
+    for index, (url, seller_id) in tasks:
+        task_queue.put((index, url, seller_id))
 
     with ThreadPoolExecutor(max_workers=config["max_workers"]) as executor:
         for worker_index in range(config["max_workers"]):
             executor.submit(worker, worker_index)
 
+    print("合并多线程文件输出...")
+    merge_excel_files(folder=".")
 
+    print("修改表头...")
+    df_raw = pd.read_excel(config["out_filename"])
+    df = df_raw.rename(columns=COLUMN_MAP)
+    df.to_excel(config["out_filename"], index=False)
 
-
-
+    input("按任意键关闭程序...")
 
 
 

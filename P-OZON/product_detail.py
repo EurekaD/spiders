@@ -4,6 +4,7 @@ from datetime import datetime
 import traceback
 from DrissionPage import ChromiumPage
 from dateutil.relativedelta import relativedelta
+
 RUB_TO_CNY = 0.085  # 1 卢布 ≈ 0.075 人民币
 
 extract_num = lambda s: re.search(r"\d+", s).group() if re.search(r"\d+", s) else None
